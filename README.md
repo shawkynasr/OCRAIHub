@@ -62,7 +62,7 @@ python OCRAIHub.py
 
 This tool would not be possible without the incredible work of the open-source and AI communities:
 *   Special thanks to [Gemini-OCR-Arabic](https://github.com/the-cataloger/Gemini-OCR-Arabic) by the-cataloger, which served as the foundational fork and inspiration for the early versions of this tool.
-*[Google Gemini](https://deepmind.google/technologies/gemini/) for their cutting-edge multimodal VLM APIs.
+*   [Google Gemini](https://deepmind.google/technologies/gemini/) for their cutting-edge multimodal VLM APIs.
 *   [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) by Baidu for their industry-leading layout detection and document parsing models.
 *   [PyMuPDF (Fitz)](https://github.com/pymupdf/PyMuPDF) for lightning-fast local PDF rasterization.
 *[PySide6](https://doc.qt.io/qtforpython-6/) for the robust GUI framework.
