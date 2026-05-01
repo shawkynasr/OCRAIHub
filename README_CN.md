@@ -58,7 +58,7 @@ python OCRAIHub.py
 
 本工具的诞生离不开开源社区与 AI 领域的杰出贡献：
 *   特别感谢 the-cataloger 开源的 [Gemini-OCR-Arabic](https://github.com/the-cataloger/Gemini-OCR-Arabic) 项目。该项目是本工具早期版本的基础分支与灵感来源。
-*[Google Gemini](https://deepmind.google/technologies/gemini/) 提供了前沿的多模态 VLM API。
+*   [Google Gemini](https://deepmind.google/technologies/gemini/) 提供了前沿的多模态 VLM API。
 *   [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) 百度开源的业界领先的版面分析与文档解析模型。
 *   [PyMuPDF (Fitz)](https://github.com/pymupdf/PyMuPDF) 提供了极速的本地 PDF 渲染功能。
 *[PySide6](https://doc.qt.io/qtforpython-6/) 提供了稳定强大的 GUI 框架。
