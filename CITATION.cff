@@ -1,0 +1,36 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+
+cff-version: 1.2.0
+title: OCRAIHub
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - given-names: Shawky
+    family-names: Nasr
+    email: shawkynasr@126.com
+identifiers:
+  - type: url
+    value: 'https://github.com/shawkynasr/OCRAIHub'
+    description: OCR AI Hub
+repository-code: 'https://github.com/shawkynasr/OCRAIHub'
+abstract: >-
+  OCRAIHub is a powerful, multi-engine Desktop GUI
+  application designed to extract highly accurate text,
+  markdown tables, math formulas, and charts from images and
+  PDFs. It leverages the world's most advanced
+  Vision-Language Models (VLMs) to provide perfect document
+  digitization.
+
+
+  Currently supports Google Gemini (2.5/ 3.1) and Baidu
+  PaddleOCR-VL (1.5).
+keywords:
+  - OCR
+  - PaddleOCR-VL
+  - Google Gemini
+license: MIT
+version: V2
+date-released: '2026-05-01'
