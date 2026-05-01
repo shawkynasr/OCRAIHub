@@ -1,0 +1,37 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6 pymupdf requests pyinstaller google-genai pydantic opencv-python pandas pillow
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --name "OCRAIHub" --onefile --windowed --noconsole --clean --hidden-import pydantic --hidden-import google.genai --collect-all google.genai --copy-metadata google-genai OCRAIHub.py
+
+      - name: List dist directory (Debug)
+        run: dir dist
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OCRAIHub-Windows
+          path: dist/*.exe
