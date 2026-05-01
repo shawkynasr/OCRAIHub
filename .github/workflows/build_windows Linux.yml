@@ -1,0 +1,72 @@
+name: Build Releases (Windows & Linux)
+
+on:
+  workflow_dispatch:  # Allows you to trigger it manually
+  push:
+    branches: [ "main" ]
+
+jobs:
+  # ==========================================
+  # JOB 1: BUILD WINDOWS VERSION
+  # ==========================================
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install PySide6 pymupdf pandas opencv-python pillow requests google-genai pydantic pyinstaller
+
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --name "OCRAIHub" --onefile --windowed --noconsole --clean --hidden-import pydantic --hidden-import google.genai --collect-all google.genai --copy-metadata google-genai OCRAIHub.py
+
+    - name: Upload Windows EXE
+      uses: actions/upload-artifact@v4
+      with:
+        name: OCRAIHub-Windows
+        path: dist/OCRAIHub.exe
+
+  # ==========================================
+  # JOB 2: BUILD LINUX VERSION
+  # ==========================================
+  build-linux:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install System Dependencies for PySide6 & OpenCV
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0 libgl1
+
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install PySide6 pymupdf pandas opencv-python pillow requests google-genai pydantic pyinstaller
+
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --name "OCRAIHub" --onefile --windowed --clean --hidden-import pydantic --hidden-import google.genai --collect-all google.genai --copy-metadata google-genai OCRAIHub.py
+
+    - name: Upload Linux Executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: OCRAIHub-Linux
+        path: dist/OCRAIHub
