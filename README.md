@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.8%2B-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
-[中文文档](RREADME_CN.md)  &  [تعريف باللغة العربية](README_AR.md)
+[中文文档](README_CN.md)  &  [تعريف باللغة العربية](README_AR.md)
 
 **OCRAIHub** is a powerful, multi-engine Desktop GUI application designed to extract highly accurate text, markdown tables, math formulas, and charts from images and PDFs. It leverages the world's most advanced Vision-Language Models (VLMs) to provide perfect document digitization.
 
