@@ -8,7 +8,7 @@
 
 **OCRAIHub** is a powerful, multi-engine Desktop GUI application designed to extract highly accurate text, markdown tables, math formulas, and charts from images and PDFs. It leverages the world's most advanced Vision-Language Models (VLMs) to provide perfect document digitization.
 
-Currently supports **Google Gemini (2.5/ 3.1)** and **Baidu PaddleOCR-VL (1.5)**.
+Currently supports **Google Gemini (2.5/ 3.5)** , **Baidu PaddleOCR-VL (1.6)**, **MinerU** and **Textin**.
 
 ---
 
