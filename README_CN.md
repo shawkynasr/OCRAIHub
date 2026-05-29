@@ -6,7 +6,8 @@
 
 **OCRAIHub** 是一款功能强大的多引擎桌面端 GUI 应用程序。它利用世界上最先进的视觉语言模型 (VLM)，能够从图像和 PDF 中高精度地提取文本、Markdown 表格、数学公式和图表，实现完美的文档数字化。
 
-目前支持 **Google Gemini (2.5/3.1)** 和 **百度 PaddleOCR-VL (1.5)**。
+目前支持 **Google Gemini (2.5/3.5)** 和 **百度 PaddleOCR-VL (1.6)**, **MinerU** and **Textin**。
+
 
 ---
 
