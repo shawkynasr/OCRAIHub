@@ -12,6 +12,7 @@ import textwrap
 import cv2
 import numpy as np
 import base64
+import zipfile
 
 # --- GOOGLE GENAI SDK IMPORTS ---
 from google import genai
@@ -85,7 +86,7 @@ class ImagePreviewDialog(QDialog):
         super().resizeEvent(event)
         self.show_image()
 
-# --- (2. RequestWorker - Handles Both Gemini and Baidu PaddleOCR) ---
+# --- (2. RequestWorker - Handles Gemini, Baidu PaddleOCR, Textin, and MinerU) ---
 class RequestWorker(QObject):
     finished = Signal(str)
     error = Signal(str)
@@ -99,9 +100,10 @@ class RequestWorker(QObject):
                  process_images_resize_factor=1.0, 
                  all_pages=True, start_page=1, end_page=1,
                  num_columns=1, engine="Google Gemini", custom_url="", baidu_prompt="ocr",
-                 native_pdf=False, download_figures=False): 
+                 native_pdf=False, download_figures=False, secret_code=""): 
         super().__init__()
         self.api_key = api_key
+        self.secret_code = secret_code
         self.model_name = model_name
         self.prompt_text = prompt_text
         self.image_paths = image_paths if image_paths else[]
@@ -123,8 +125,28 @@ class RequestWorker(QObject):
         self.baidu_prompt = baidu_prompt
         self.NATIVE_PDF = native_pdf
         self.DOWNLOAD_FIGURES = download_figures
+        
+        # STOP FLAG
+        self._is_cancelled = False
+
+    def cancel(self):
+        """Called by the UI thread to stop processing"""
+        self._is_cancelled = True
+
+    def check_cancelled(self):
+        """Throws an exception if the user clicked Stop"""
+        if self._is_cancelled:
+            raise Exception("Task manually stopped by user.")
+
+    def sleep_with_check(self, seconds):
+        """Sleeps but wakes up every 0.5s to check if the user clicked Stop"""
+        iterations = int(seconds * 2)
+        for _ in range(iterations):
+            self.check_cancelled()
+            time.sleep(0.5)
 
     def split_image_into_columns(self, pil_img):
+        self.check_cancelled()
         if self.NUM_COLUMNS <= 1:
             return [pil_img]
             
@@ -201,6 +223,7 @@ class RequestWorker(QObject):
         return slices
 
     def process_single_image(self, img):
+        self.check_cancelled()
         if img.mode not in ('RGB', 'L'):
             img = img.convert('RGB')
             
@@ -259,6 +282,7 @@ class RequestWorker(QObject):
              self.status_update.emit(f"... Processing all PDF pages: {num_pages} pages.")
         
         for i in range(start_index, end_index + 1): 
+            self.check_cancelled()
             page = doc[i] 
             pix = page.get_pixmap(dpi=self.PDF_DPI)
             img = PIL.Image.frombytes("RGB",[pix.width, pix.height], pix.samples) 
@@ -272,6 +296,7 @@ class RequestWorker(QObject):
         return images
 
     def download_extracted_images(self, image_list, save_base_name):
+        self.check_cancelled()
         folder_path = f"{save_base_name}_images"
         os.makedirs(folder_path, exist_ok=True)
         
@@ -281,7 +306,6 @@ class RequestWorker(QObject):
                     self.status_update.emit(f"⬇️ Downloading figure: {img_name}...")
                     img_data = requests.get(img_url, timeout=15).content
                     
-                    # Create subdirectories if the image name implies a path (e.g. imgs/img_01.jpg)
                     full_img_path = os.path.join(folder_path, img_name)
                     os.makedirs(os.path.dirname(full_img_path), exist_ok=True)
                     
@@ -291,7 +315,7 @@ class RequestWorker(QObject):
                     self.status_update.emit(f"⚠️ Failed to download {img_name}: {e}")
 
     def parse_paddle_response(self, data, save_base_name=None):
-        """Extracts text and auto-downloads images based on the PaddleOCR-VL-1.5 JSON spec"""
+        self.check_cancelled()
         if "result" in data and "layoutParsingResults" in data["result"]:
             results = data["result"]["layoutParsingResults"]
             extracted =[]
@@ -300,13 +324,11 @@ class RequestWorker(QObject):
                     if "text" in res["markdown"]:
                         extracted.append(res["markdown"]["text"])
                     
-                    # Download inline markdown images if enabled
                     if self.DOWNLOAD_FIGURES and "images" in res["markdown"] and save_base_name:
-                        image_urls = res["markdown"]["images"] # dictionary format in Baidu API
+                        image_urls = res["markdown"]["images"] 
                         if image_urls:
                             self.download_extracted_images(image_urls, save_base_name)
                 
-                # Also download "outputImages" (cropped figures) if they exist
                 if self.DOWNLOAD_FIGURES and "outputImages" in res and save_base_name:
                     out_images = res["outputImages"]
                     if out_images:
@@ -315,7 +337,6 @@ class RequestWorker(QObject):
             if extracted:
                 return "\n\n".join(extracted)
 
-        # Legacy PaddleOCR format fallback
         extracted_lines =[]
         def extract_text(obj):
             if isinstance(obj, dict):
@@ -341,30 +362,156 @@ class RequestWorker(QObject):
             
         return json.dumps(data, ensure_ascii=False, indent=2)
 
-    def send_baidu_request(self, file_data, file_type=1):
-        """Sends payload to Baidu mirroring the exact official optionalPayload structure"""
-        file_b64 = base64.b64encode(file_data).decode('ascii')
+    def parse_textin_response(self, response_json):
+        if "result" in response_json and "markdown" in response_json["result"]:
+            return response_json["result"]["markdown"]
+        return json.dumps(response_json, ensure_ascii=False, indent=2)
+
+    def _extract_mineru_markdown(self, obj):
+        found =[]
+        if isinstance(obj, dict):
+            if "markdown_content" in obj and isinstance(obj["markdown_content"], str) and obj["markdown_content"].strip():
+                found.append(obj["markdown_content"])
+            else:
+                for v in obj.values():
+                    found.extend(self._extract_mineru_markdown(v))
+        elif isinstance(obj, list):
+            for item in obj:
+                found.extend(self._extract_mineru_markdown(item))
+        return found
+
+    def fetch_mineru_result(self, zip_url, save_base_name):
+        self.check_cancelled()
+        self.status_update.emit("... 📥 Downloading and extracting MinerU ZIP results...")
+        resp = requests.get(zip_url, timeout=120)
+        resp.raise_for_status()
+        
+        zf = zipfile.ZipFile(io.BytesIO(resp.content))
+        md_content = ""
+        
+        for file_info in zf.infolist():
+            if file_info.filename.endswith(".md"):
+                md_content = zf.read(file_info.filename).decode("utf-8")
+                break
+                
+        if self.DOWNLOAD_FIGURES and save_base_name:
+            folder_path = f"{save_base_name}_images"
+            os.makedirs(folder_path, exist_ok=True)
+            for file_info in zf.infolist():
+                if file_info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.svg')):
+                    img_data = zf.read(file_info.filename)
+                    base_name = os.path.basename(file_info.filename)
+                    if base_name:
+                        out_path = os.path.join(folder_path, base_name)
+                        with open(out_path, "wb") as f:
+                            f.write(img_data)
+                            
+        return md_content
+
+    def process_mineru_batch(self, file_tuples, save_base_name=None):
+        self.check_cancelled()
+        url_batch = "https://mineru.net/api/v4/file-urls/batch"
         headers = {
-            "Authorization": f"token {self.api_key}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
         }
         
-        # This matches the official Baidu AI Studio script exactly for rich Markdown output
-        payload = {
-            "file": file_b64,
-            "fileType": file_type, 
-            "markdownIgnoreLabels":[
+        files_payload =[]
+        for i, (fname, _) in enumerate(file_tuples):
+            safe_id = f"file_{int(time.time())}_{i}"
+            files_payload.append({"name": fname, "data_id": safe_id})
+            
+        data = {
+            "files": files_payload,
+            "model_version": "vlm"
+        }
+        
+        self.status_update.emit("... 🚀 Requesting MinerU batch upload URLs...")
+        res = requests.post(url_batch, headers=headers, json=data)
+        res.raise_for_status()
+        res_json = res.json()
+        
+        if res_json.get("code") != 0:
+            raise Exception(f"MinerU Request Error: {res_json.get('msg')}")
+            
+        batch_id = res_json["data"]["batch_id"]
+        urls = res_json["data"]["file_urls"]
+        
+        for i, (fname, fbytes) in enumerate(file_tuples):
+            self.check_cancelled()
+            self.status_update.emit(f"... 📤 Uploading {fname} to MinerU...")
+            upload_res = requests.put(urls[i], data=fbytes, timeout=120)
+            upload_res.raise_for_status()
+            
+        poll_url = f"https://mineru.net/api/v4/extract-results/batch/{batch_id}"
+        self.status_update.emit(f"... ⏳ Waiting for MinerU VLM extraction (Batch: {batch_id})...")
+        
+        poll_headers = {"Authorization": f"Bearer {self.api_key}"}
+        
+        for _ in range(120): # Max 10 minutes timeout
+            self.sleep_with_check(5) # Responsive sleep
+            poll_res = requests.get(poll_url, headers=poll_headers, timeout=30)
+            if poll_res.status_code != 200:
+                continue
+                
+            poll_json = poll_res.json()
+            if poll_json.get("code") != 0:
+                raise Exception(f"MinerU Polling Error: {poll_json.get('msg')}")
+                
+            data_obj = poll_json.get("data", {})
+            results_array = data_obj.get("extract_result",[])
+            
+            if not results_array:
+                self.status_update.emit("... ⏳ MinerU server working... State: Preparing")
+                continue
+                
+            all_done = True
+            failed_msgs =[]
+            combined_md =[]
+            
+            for item in results_array:
+                state = item.get("state", "unknown").lower()
+                if state in ["failed", "error"]:
+                    failed_msgs.append(f"{item.get('file_name', 'Unknown')}: {state}")
+                elif state != "done":
+                    all_done = False
+                    self.status_update.emit(f"... ⏳ MinerU server working... State: {state}")
+                    break 
+                    
+            if failed_msgs:
+                raise Exception(f"MinerU Task Failed: {', '.join(failed_msgs)}")
+                
+            if all_done:
+                self.check_cancelled()
+                self.status_update.emit("... ✅ MinerU extraction completed. Downloading ZIP...")
+                for item in results_array:
+                    zip_url = item.get("full_zip_url")
+                    if zip_url:
+                        md = self.fetch_mineru_result(zip_url, save_base_name)
+                        if md:
+                            combined_md.append(md)
+                return "\n\n".join(combined_md)
+                
+        raise Exception("MinerU Timeout: Processing took more than 10 minutes.")
+
+    def process_baidu_async(self, file_data, file_name, save_base_name):
+        self.check_cancelled()
+        url = self.custom_url if self.custom_url else "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+        headers = {"Authorization": f"bearer {self.api_key}"}
+        
+        optional_payload = {
+            "markdownIgnoreLabels": [
                 "header", "header_image", "footer", "footer_image", 
                 "number", "footnote", "aside_text"
             ],
             "useDocOrientationClassify": False,
             "useDocUnwarping": False,
-            "useLayoutDetection": True,        # Required for tables & layouts
+            "useLayoutDetection": True,        
             "useChartRecognition": False,
             "useSealRecognition": True,
             "useOcrForImageBlock": False,
-            "mergeTables": True,               # Required to output actual markdown tables
-            "relevelTitles": True,             # Required for correct heading (###) extraction
+            "mergeTables": True,               
+            "relevelTitles": True,             
             "layoutShapeMode": "auto",
             "promptLabel": self.baidu_prompt,
             "repetitionPenalty": 1,
@@ -373,20 +520,126 @@ class RequestWorker(QObject):
             "minPixels": 147384,
             "maxPixels": 2822400,
             "layoutNms": True,
-            "restructurePages": True           # Required to properly assemble reading order
+            "restructurePages": True           
         }
         
-        response = requests.post(self.custom_url, json=payload, headers=headers)
+        data = {
+            "model": "PaddleOCR-VL-1.6",
+            "optionalPayload": json.dumps(optional_payload)
+        }
+        
+        files = {"file": (file_name, file_data)}
+        
+        self.status_update.emit(f"... 🚀 Submitting Async Job to Baidu PaddleOCR-VL...")
+        response = requests.post(url, headers=headers, data=data, files=files)
+        response.raise_for_status()
+        res_json = response.json()
+        
+        if "data" not in res_json or "jobId" not in res_json["data"]:
+            raise Exception(f"Baidu Job Submission Failed: {res_json}")
+            
+        job_id = res_json["data"]["jobId"]
+        self.status_update.emit(f"... ⏳ Job successfully submitted (ID: {job_id}). Polling server...")
+        
+        jsonl_url = ""
+        poll_url = f"{url}/{job_id}"
+        
+        for _ in range(120): 
+            self.sleep_with_check(5) # Responsive sleep
+            poll_res = requests.get(poll_url, headers=headers)
+            poll_res.raise_for_status()
+            poll_data = poll_res.json()
+            
+            state = poll_data["data"]["state"]
+            if state == 'pending':
+                self.status_update.emit("... ⏳ Baidu status: Job in queue (pending)...")
+            elif state == 'running':
+                try:
+                    total_pages = poll_data['data']['extractProgress']['totalPages']
+                    extracted_pages = poll_data['data']['extractProgress']['extractedPages']
+                    self.status_update.emit(f"... ⏳ Baidu status: running ({extracted_pages}/{total_pages} pages extracted)")
+                except KeyError:
+                    self.status_update.emit("... ⏳ Baidu status: processing...")
+            elif state == 'done':
+                jsonl_url = poll_data['data']['resultUrl']['jsonUrl']
+                break
+            elif state == "failed":
+                error_msg = poll_data['data'].get('errorMsg', 'Unknown error')
+                raise Exception(f"Baidu Task Failed: {error_msg}")
+                
+        if not jsonl_url:
+            raise Exception("No JSONL URL returned from Baidu Async Job.")
+            
+        self.check_cancelled()
+        self.status_update.emit("... ⬇️ Downloading results from Baidu...")
+        jsonl_response = requests.get(jsonl_url)
+        jsonl_response.raise_for_status()
+        
+        lines = jsonl_response.text.strip().split('\n')
+        full_text =[]
+        
+        for line in lines:
+            line = line.strip()
+            if not line: continue
+            page_data = json.loads(line)
+            page_text = self.parse_paddle_response(page_data, save_base_name)
+            if page_text:
+                full_text.append(page_text)
+                
+        return "\n\n".join(full_text)
+
+    def send_textin_request(self, file_data):
+        self.check_cancelled()
+        url = "https://api.textin.com/ai/service/v1/pdf_to_markdown"
+        headers = {
+            "x-ti-app-id": self.api_key,
+            "x-ti-secret-code": self.secret_code,
+            "Content-Type": "application/octet-stream"
+        }
+        
+        textin_dpi = 216
+        if self.PDF_DPI <= 100:
+            textin_dpi = 72
+        elif self.PDF_DPI <= 180:
+            textin_dpi = 144
+
+        options = {
+            "apply_document_tree": 1,
+            "catalog_details": 1,
+            "dpi": textin_dpi,
+            "formula_level": 1,
+            "get_excel": 1,
+            "get_image": "none", 
+            "markdown_details": 1,
+            "page_count": 1000,
+            "page_details": 1,
+            "paratext_mode": "annotation",
+            "parse_mode": "scan",
+            "table_flavor": "md",
+        }
+        response = requests.post(url, params=options, headers=headers, data=file_data)
         return response
 
     @Slot()
     def run(self):
         try:
+            self.check_cancelled()
             client = None
             clean_model_name = self.model_name
+            engine_suffix = ""
+            
             if self.engine == "Google Gemini":
                 client = genai.Client(api_key=self.api_key)
                 clean_model_name = self.model_name.replace("models/", "")
+                engine_suffix = clean_model_name.replace("/", "-")
+            elif self.engine == "Baidu PaddleOCR-VL":
+                engine_suffix = "PaddleOCR"
+            elif self.engine == "Textin":
+                engine_suffix = "Textin"
+            elif self.engine == "MinerU":
+                engine_suffix = "MinerU"
+            else:
+                engine_suffix = "OCR"
                 
             prompt = self.prompt_text
             
@@ -396,8 +649,7 @@ class RequestWorker(QObject):
                 types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="BLOCK_NONE"),
                 types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="BLOCK_NONE"),
             ]
-            custom_generation_config = types.GenerateContentConfig(
-                max_output_tokens=8192, 
+            custom_generation_config = types.GenerateContentConfig( 
                 temperature=0.1,
                 safety_settings=safe_settings
             )
@@ -413,8 +665,13 @@ class RequestWorker(QObject):
             # ==========================================
             if self.image_paths: 
                 self.status_update.emit("=== 🖼️ Processing Standalone Images ===")
+                
+                base_img_name = os.path.splitext(os.path.basename(self.image_paths[0]))[0] if self.image_paths else "images_extracted"
+                save_base_name = f"{base_img_name}_{engine_suffix}"
+                
                 images_to_process =[]
                 for p in self.image_paths:
+                    self.check_cancelled()
                     img = PIL.Image.open(p)
                     if img.mode not in ('RGB', 'L'):
                         img = img.convert('RGB')
@@ -430,13 +687,16 @@ class RequestWorker(QObject):
                         jobs.append( {"type": "image_batch", "content": batch} )
 
                     total_jobs = len(jobs)
+                    images_full_text = ""
 
                     for i, job in enumerate(jobs):
+                        self.check_cancelled()
                         job_content = job["content"]
                         self.status_update.emit(f"... 🚀 Sending image batch/page {i+1} of {total_jobs}...")
                         
                         text_response = ""
                         for attempt in range(MAX_RETRIES + 1):
+                            self.check_cancelled()
                             try:
                                 if self.engine == "Google Gemini":
                                     payload = [prompt] 
@@ -451,39 +711,69 @@ class RequestWorker(QObject):
                                     finish_reason = str(response.candidates[0].finish_reason)
                                     if "SAFETY" in finish_reason: raise Exception(f"Blocked by API Safety filter. Reason: {finish_reason}")
                                     if "PROHIBITED" in finish_reason or "BLOCK" in finish_reason: raise Exception(f"Blocked by API Prohibited Content. Reason: {finish_reason}")
-                                    if "MAX_TOKENS" in finish_reason: raise Exception(f"Stopped by MAX_TOKENS limit. Reason: {finish_reason}")
+                                    
+                                    if "MAX_TOKENS" in finish_reason: 
+                                        text_response = response.text if response.text else ""
+                                        text_response += "\n\n[⚠️ WARNING: Text cut off due to MAX_TOKENS limit! Please lower Gemini Batch Size to 1 or 2 in Advanced Settings.]\n"
+                                        break
                                         
                                     text_response = response.text
                                     break 
-                                else:
+                                elif self.engine == "Baidu PaddleOCR-VL":
                                     img = job_content[0]
                                     buffer = io.BytesIO()
                                     img.save(buffer, format="JPEG")
                                     image_data = buffer.getvalue()
                                     
-                                    response = self.send_baidu_request(image_data, file_type=1)
+                                    text_response = self.process_baidu_async(image_data, f"image_page_{i}.jpg", save_base_name)
+                                    break
+                                elif self.engine == "Textin":
+                                    img = job_content[0]
+                                    buffer = io.BytesIO()
+                                    img.save(buffer, format="JPEG")
+                                    image_data = buffer.getvalue()
+                                    
+                                    response = self.send_textin_request(image_data)
                                     if response.status_code != 200:
                                         error_msg = response.text[:250]
-                                        if response.status_code == 500:
-                                            raise Exception(f"HTTP 500 - Baidu Internal Error. Details: {error_msg}")
-                                        raise Exception(f"HTTP {response.status_code} - {error_msg}")
+                                        raise Exception(f"HTTP {response.status_code} - Textin Error. Details: {error_msg}")
                                         
-                                    save_base_name = os.path.splitext(self.image_paths[0])[0] if self.image_paths else "image_extracted"
-                                    text_response = self.parse_paddle_response(response.json(), save_base_name=save_base_name)
+                                    text_response = self.parse_textin_response(response.json())
+                                    break
+                                elif self.engine == "MinerU":
+                                    file_tuples =[]
+                                    for idx_img, pil_img in enumerate(job_content):
+                                        buf = io.BytesIO()
+                                        pil_img.save(buf, format="JPEG")
+                                        file_tuples.append((f"img_{i}_{idx_img}.jpg", buf.getvalue()))
+                                    text_response = self.process_mineru_batch(file_tuples, save_base_name)
                                     break
 
                             except Exception as api_error:
+                                if "manually stopped" in str(api_error):
+                                    raise
                                 if attempt < MAX_RETRIES:
                                     self.status_update.emit(f"⚠️ Error on Item {i+1}. Retrying... ({attempt + 1}/{MAX_RETRIES})")
-                                    time.sleep(RETRY_DELAY)
+                                    self.sleep_with_check(RETRY_DELAY)
                                 else:
                                     text_response = f"\n[⚠️ WARNING: Batch {i+1} Exception - {str(api_error)}]\n"
                                     self.status_update.emit(f"❌ API Exception on Item {i+1}: {str(api_error)}")
                                     issues_found.append(f"Images Batch {i+1}: API Exception ({str(api_error)})")
 
+                        images_full_text += text_response + "\n\n"
                         self.finished.emit(f"--- OCR Result (Images Batch {i+1}/{total_jobs}) ---\n{text_response}")
                         if i < total_jobs - 1:
-                            time.sleep(self.FREE_TIER_DELAY)
+                            self.sleep_with_check(self.FREE_TIER_DELAY)
+                            
+                    if images_full_text.strip():
+                        out_md_path = f"{save_base_name}.md"
+                        try:
+                            with open(out_md_path, "w", encoding="utf-8") as f:
+                                f.write(images_full_text)
+                            self.status_update.emit(f"✅ 💾 Auto-saved Markdown to: {out_md_path}")
+                        except Exception as e:
+                            self.status_update.emit(f"❌ Failed to auto-save Images: {str(e)}")
+                            issues_found.append(f"Images: Auto-save Failed ({str(e)})")
 
             # ==========================================
             # 2. PROCESS PDFs
@@ -491,31 +781,42 @@ class RequestWorker(QObject):
             if self.file_paths:
                 total_pdfs = len(self.file_paths)
                 for pdf_idx, pdf_path in enumerate(self.file_paths):
+                    self.check_cancelled()
                     pdf_name = os.path.basename(pdf_path)
-                    save_base_name = os.path.splitext(pdf_path)[0]
+                    
+                    base_pdf_name = os.path.splitext(pdf_path)[0]
+                    save_base_name = f"{base_pdf_name}_{engine_suffix}"
+                    
                     self.status_update.emit(f"\n{'='*40}\n=== 📄 Starting PDF {pdf_idx+1}/{total_pdfs}: {pdf_name} ===\n{'='*40}")
                     
-                    if self.engine == "Baidu PaddleOCR-VL (Custom URL)" and self.NATIVE_PDF:
-                        self.status_update.emit(f"... 🚀 Sending Native PDF file to Baidu (bypassing local render)...")
+                    if self.engine in ["Baidu PaddleOCR-VL", "Textin", "MinerU"] and self.NATIVE_PDF:
+                        self.status_update.emit(f"... 🚀 Sending Native PDF file to {self.engine} (bypassing local render)...")
                         with open(pdf_path, "rb") as f:
                             pdf_data = f.read()
                         
                         text_response = ""
                         for attempt in range(MAX_RETRIES + 1):
+                            self.check_cancelled()
                             try:
-                                response = self.send_baidu_request(pdf_data, file_type=0)
-                                if response.status_code != 200:
-                                    error_msg = response.text[:250]
-                                    if response.status_code == 500:
-                                        raise Exception(f"HTTP 500 - Baidu Internal Error. File might be too large. Details: {error_msg}")
-                                    raise Exception(f"HTTP {response.status_code} - {error_msg}")
-                                    
-                                text_response = self.parse_paddle_response(response.json(), save_base_name=save_base_name)
-                                break
+                                if self.engine == "Baidu PaddleOCR-VL":
+                                    text_response = self.process_baidu_async(pdf_data, pdf_name, save_base_name)
+                                    break
+                                elif self.engine == "Textin":
+                                    response = self.send_textin_request(pdf_data)
+                                    if response.status_code != 200:
+                                        error_msg = response.text[:250]
+                                        raise Exception(f"HTTP {response.status_code} - Textin Error. Details: {error_msg}")
+                                    text_response = self.parse_textin_response(response.json())
+                                    break
+                                elif self.engine == "MinerU":
+                                    text_response = self.process_mineru_batch([(pdf_name, pdf_data)], save_base_name)
+                                    break
                             except Exception as api_error:
+                                if "manually stopped" in str(api_error):
+                                    raise
                                 if attempt < MAX_RETRIES:
                                     self.status_update.emit(f"⚠️ Error on Native PDF {pdf_name}. Retrying... ({attempt + 1}/{MAX_RETRIES})")
-                                    time.sleep(RETRY_DELAY)
+                                    self.sleep_with_check(RETRY_DELAY)
                                 else:
                                     text_response = f"\n[⚠️ WARNING: {pdf_name} Exception - {str(api_error)}]\n"
                                     self.status_update.emit(f"❌ API Exception on Native PDF: {str(api_error)}")
@@ -540,11 +841,13 @@ class RequestWorker(QObject):
                         pdf_full_text = "" 
                         
                         for i, job in enumerate(jobs):
+                            self.check_cancelled()
                             job_content = job["content"]
                             self.status_update.emit(f"... 🚀 Sending {pdf_name} batch/page {i+1} of {total_jobs}...")
                             
                             text_response = ""
                             for attempt in range(MAX_RETRIES + 1):
+                                self.check_cancelled()
                                 try:
                                     if self.engine == "Google Gemini":
                                         payload =[prompt] 
@@ -559,30 +862,50 @@ class RequestWorker(QObject):
                                         finish_reason = str(response.candidates[0].finish_reason)
                                         if "SAFETY" in finish_reason: raise Exception(f"Blocked by API Safety filter. Reason: {finish_reason}")
                                         if "PROHIBITED" in finish_reason or "BLOCK" in finish_reason: raise Exception(f"Blocked by API Prohibited Content. Reason: {finish_reason}")
-                                        if "MAX_TOKENS" in finish_reason: raise Exception(f"Stopped by MAX_TOKENS limit. Reason: {finish_reason}")
+                                        
+                                        if "MAX_TOKENS" in finish_reason: 
+                                            text_response = response.text if response.text else ""
+                                            text_response += "\n\n[⚠️ WARNING: Text cut off due to MAX_TOKENS limit! Please lower Gemini Batch Size to 1 or 2 in Advanced Settings.]\n"
+                                            break
                                             
                                         text_response = response.text
                                         break 
-                                    else:
+                                    elif self.engine == "Baidu PaddleOCR-VL":
                                         img = job_content[0]
                                         buffer = io.BytesIO()
                                         img.save(buffer, format="JPEG")
                                         image_data = buffer.getvalue()
                                         
-                                        response = self.send_baidu_request(image_data, file_type=1)
+                                        text_response = self.process_baidu_async(image_data, f"page_{i}.jpg", save_base_name)
+                                        break
+                                    elif self.engine == "Textin":
+                                        img = job_content[0]
+                                        buffer = io.BytesIO()
+                                        img.save(buffer, format="JPEG")
+                                        image_data = buffer.getvalue()
+                                        
+                                        response = self.send_textin_request(image_data)
                                         if response.status_code != 200:
                                             error_msg = response.text[:250]
-                                            if response.status_code == 500:
-                                                raise Exception(f"HTTP 500 - Baidu Internal Error. Details: {error_msg}")
-                                            raise Exception(f"HTTP {response.status_code} - {error_msg}")
+                                            raise Exception(f"HTTP {response.status_code} - Textin Error. Details: {error_msg}")
                                             
-                                        text_response = self.parse_paddle_response(response.json(), save_base_name=save_base_name)
+                                        text_response = self.parse_textin_response(response.json())
+                                        break
+                                    elif self.engine == "MinerU":
+                                        file_tuples =[]
+                                        for idx_img, pil_img in enumerate(job_content):
+                                            buf = io.BytesIO()
+                                            pil_img.save(buf, format="JPEG")
+                                            file_tuples.append((f"pdf_page_{idx_img}.jpg", buf.getvalue()))
+                                        text_response = self.process_mineru_batch(file_tuples, save_base_name)
                                         break
 
                                 except Exception as api_error:
+                                    if "manually stopped" in str(api_error):
+                                        raise
                                     if attempt < MAX_RETRIES:
                                         self.status_update.emit(f"⚠️ Error on Batch {i+1}. Retrying... ({attempt + 1}/{MAX_RETRIES})")
-                                        time.sleep(RETRY_DELAY)
+                                        self.sleep_with_check(RETRY_DELAY)
                                     else:
                                         text_response = f"\n[⚠️ WARNING: Batch {i+1} Exception - {str(api_error)}]\n"
                                         self.status_update.emit(f"❌ API Exception on Batch {i+1}: {str(api_error)}")
@@ -592,9 +915,9 @@ class RequestWorker(QObject):
                             self.finished.emit(f"--- OCR Result ({pdf_name} - Batch {i+1}/{total_jobs}) ---\n{text_response}")
                             
                             if i < total_jobs - 1 or pdf_idx < total_pdfs - 1:
-                                time.sleep(self.FREE_TIER_DELAY)
+                                self.sleep_with_check(self.FREE_TIER_DELAY)
 
-                    out_md_path = os.path.splitext(pdf_path)[0] + "_OCR.md"
+                    out_md_path = f"{save_base_name}.md"
                     try:
                         with open(out_md_path, "w", encoding="utf-8") as f:
                             f.write(pdf_full_text)
@@ -610,7 +933,7 @@ class RequestWorker(QObject):
             self.issues_report.emit(issues_found)  
             
         except Exception as critical_error: 
-            self.error.emit(f"Critical System Error: {critical_error}")
+            self.error.emit(f"Task Halted: {critical_error}")
         finally: 
             self.completed_all.emit()
 
@@ -618,13 +941,16 @@ class RequestWorker(QObject):
 class GeminiApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Multi-Engine AI OCR V2 By (Shawky Nasr) shawkynasr@126.com")
+        self.setWindowTitle("Multi-Engine AI OCR V3 By (Shawky Nasr) shawkynasr@126.com")
         self.setGeometry(100, 100, 1200, 800)
         self.setLayoutDirection(Qt.LeftToRight) 
 
         self.VLM_MODELS_LIST =[
-            "gemini-2.5-pro", 
+            "gemini-2.5-pro",
             "gemini-2.5-flash",
+            "gemini-3.1-pro-preview",
+            "gemini-3.1-flash-lite",
+            "gemini-3-flash-preview",
             "gemini-pro-latest",
             "gemini-flash-latest",
         ]
@@ -648,9 +974,7 @@ class GeminiApp(QMainWindow):
         
         left_column_widget = QWidget()
         left_column_layout = QVBoxLayout(left_column_widget)
-        
-        # Add consistent spacing to the left column to make it look clean on macOS
-        left_column_layout.setSpacing(12) 
+        left_column_layout.setSpacing(10)
         
         right_column_widget = QWidget()
         right_column_layout = QVBoxLayout(right_column_widget)
@@ -662,14 +986,14 @@ class GeminiApp(QMainWindow):
         engine_layout = QHBoxLayout()
         engine_label = QLabel("⚙️ OCR Engine:")
         self.engine_combo = QComboBox()
-        self.engine_combo.addItems(["Google Gemini", "Baidu PaddleOCR-VL (Custom URL)"])
+        self.engine_combo.addItems(["Google Gemini", "Baidu PaddleOCR-VL", "Textin", "MinerU"])
         engine_layout.addWidget(engine_label)
         engine_layout.addWidget(self.engine_combo)
         left_column_layout.addLayout(engine_layout)
 
-        # --- Token / API Key (Always Visible) ---
+        # --- Token / API Key / App ID (Always Visible) ---
         api_layout = QHBoxLayout()
-        api_label = QLabel("🔑 Token / API Key:")
+        self.api_label = QLabel("🔑 Token / API Key:")
         self.api_key_input = QLineEdit()
         self.api_key_input.setPlaceholderText("Enter your Token or API Key...")
         self.api_key_input.setEchoMode(QLineEdit.Password) 
@@ -677,12 +1001,35 @@ class GeminiApp(QMainWindow):
         self.test_conn_button = QPushButton("⚡ Test Connection")
         self.test_conn_button.clicked.connect(self.test_connection)
         
-        api_layout.addWidget(api_label)
+        api_layout.addWidget(self.api_label)
         api_layout.addWidget(self.api_key_input)
         api_layout.addWidget(self.test_conn_button)
         left_column_layout.addLayout(api_layout)
 
-        # --- SMART SWAPPING ENGINE SETTINGS ---
+        # --- Secret Code (Textin Only) ---
+        self.secret_code_container = QWidget()
+        sc_layout = QHBoxLayout(self.secret_code_container)
+        sc_layout.setContentsMargins(0, 0, 0, 0)
+        sc_label = QLabel("🔒 Secret Code:")
+        self.secret_code_input = QLineEdit()
+        self.secret_code_input.setPlaceholderText("Enter Secret Code (Textin)...")
+        self.secret_code_input.setEchoMode(QLineEdit.Password)
+        sc_layout.addWidget(sc_label)
+        sc_layout.addWidget(self.secret_code_input)
+        left_column_layout.addWidget(self.secret_code_container)
+
+        # --- Proxy Container (Gemini & Textin & MinerU) ---
+        self.proxy_container = QWidget()
+        proxy_layout = QHBoxLayout(self.proxy_container)
+        proxy_layout.setContentsMargins(0, 0, 0, 0)
+        proxy_label = QLabel("🌐 Local Proxy (e.g., 127.0.0.1:8888):")
+        self.proxy_input = QLineEdit()
+        self.proxy_input.setPlaceholderText("Leave empty if not in China")
+        proxy_layout.addWidget(proxy_label)
+        proxy_layout.addWidget(self.proxy_input)
+        left_column_layout.addWidget(self.proxy_container)
+
+        # --- Model / Task / Custom URL ---
         self.engine_settings_container = QWidget()
         engine_settings_layout = QVBoxLayout(self.engine_settings_container)
         engine_settings_layout.setContentsMargins(0, 0, 0, 0)
@@ -691,39 +1038,27 @@ class GeminiApp(QMainWindow):
         self.gemini_widget = QWidget()
         gemini_layout = QVBoxLayout(self.gemini_widget)
         gemini_layout.setContentsMargins(0, 0, 0, 0)
-        
-        px_lay = QHBoxLayout()
-        px_lay.addWidget(QLabel("🌐 Local Proxy (e.g., 127.0.0.1:8888):"))
-        self.proxy_input = QLineEdit()
-        self.proxy_input.setPlaceholderText("Leave empty if not in China")
-        px_lay.addWidget(self.proxy_input)
-        
         md_lay = QHBoxLayout()
         md_lay.addWidget(QLabel("🤖 Gemini Model:"))
         self.model_combo = QComboBox()
         self.model_combo.addItems(self.VLM_MODELS_LIST)
         md_lay.addWidget(self.model_combo)
-        
-        gemini_layout.addLayout(px_lay)
         gemini_layout.addLayout(md_lay)
         
         # 2. Baidu Widget
         self.baidu_widget = QWidget()
         baidu_layout = QVBoxLayout(self.baidu_widget)
         baidu_layout.setContentsMargins(0, 0, 0, 0)
-        
         url_lay = QHBoxLayout()
         url_lay.addWidget(QLabel("🔗 Custom API URL:"))
         self.custom_url_input = QLineEdit()
-        self.custom_url_input.setPlaceholderText("https://aistudio.baidu.com/serving/online/xxxx?xxxx")
+        self.custom_url_input.setPlaceholderText("https://paddleocr.aistudio-app.com/api/v2/ocr/jobs")
         url_lay.addWidget(self.custom_url_input)
-        
         tsk_lay = QHBoxLayout()
         tsk_lay.addWidget(QLabel("🤖 Baidu Task:"))
         self.baidu_prompt_combo = QComboBox()
         self.baidu_prompt_combo.addItems(["ocr", "table", "formula", "chart"])
         tsk_lay.addWidget(self.baidu_prompt_combo)
-        
         baidu_layout.addLayout(url_lay)
         baidu_layout.addLayout(tsk_lay)
 
@@ -753,15 +1088,15 @@ class GeminiApp(QMainWindow):
         pdf_lay.addWidget(self.pdf_path_display)
         left_column_layout.addLayout(pdf_lay)
 
-        # Baidu PDF Extras (Right below the PDF selection)
-        self.baidu_extras_widget = QWidget()
-        bx_lay = QVBoxLayout(self.baidu_extras_widget)
+        # Baidu / Textin / MinerU PDF Extras (Right below the PDF selection)
+        self.pdf_extras_widget = QWidget()
+        bx_lay = QVBoxLayout(self.pdf_extras_widget)
         bx_lay.setContentsMargins(0, 0, 0, 0)
-        self.native_pdf_checkbox = QCheckBox("📄 Native PDF Mode (Bypass PyMuPDF - Send directly to Baidu)")
-        self.download_figures_checkbox = QCheckBox("🖼️ Auto-Download Charts & Figures to Folder")
+        self.native_pdf_checkbox = QCheckBox("📄 Native PDF Mode (Bypass PyMuPDF - Best for Baidu, Textin, MinerU)")
+        self.download_figures_checkbox = QCheckBox("🖼️ Auto-Download Charts & Figures to Folder (Baidu / MinerU)")
         bx_lay.addWidget(self.native_pdf_checkbox)
         bx_lay.addWidget(self.download_figures_checkbox)
-        left_column_layout.addWidget(self.baidu_extras_widget)
+        left_column_layout.addWidget(self.pdf_extras_widget)
 
         # ==========================================
         # ADVANCED SETTINGS TOGGLE AREA
@@ -887,7 +1222,6 @@ class GeminiApp(QMainWindow):
         self.settings_container.setVisible(False)
         # ==========================================
 
-
         # ==========================================
         # 4. PROMPT TOGGLE AREA
         # ==========================================
@@ -913,10 +1247,19 @@ class GeminiApp(QMainWindow):
         self.prompt_container.setVisible(False)
         # ==========================================
 
+        # --- ACTION BUTTONS (Send & Stop) ---
+        action_layout = QHBoxLayout()
         self.send_button = QPushButton("🚀 Send OCR Request")
         self.send_button.setEnabled(False) 
-        self.send_button.setStyleSheet("font-size: 16px; padding: 10px; background-color: #4CAF50; color: white;")
-        left_column_layout.addWidget(self.send_button)
+        self.send_button.setStyleSheet("font-size: 16px; padding: 10px; background-color: #4CAF50; color: white; border-radius: 4px;")
+        
+        self.stop_button = QPushButton("🛑 Stop")
+        self.stop_button.setEnabled(False) 
+        self.stop_button.setStyleSheet("font-size: 16px; padding: 10px; background-color: #F44336; color: white; border-radius: 4px;")
+        
+        action_layout.addWidget(self.send_button)
+        action_layout.addWidget(self.stop_button)
+        left_column_layout.addLayout(action_layout)
 
         settings_io_layout = QHBoxLayout()
         self.import_settings_button = QPushButton("📥 Import Settings")
@@ -966,9 +1309,11 @@ class GeminiApp(QMainWindow):
         self.view_images_button.clicked.connect(self.show_image_previewer) 
         self.select_file_button.clicked.connect(self.open_file_dialog)
         self.api_key_input.textChanged.connect(self.check_inputs)
+        self.secret_code_input.textChanged.connect(self.check_inputs)
         self.prompt_input.textChanged.connect(self.check_inputs)
         self.response_output.textChanged.connect(self.check_save_button_status)
         self.send_button.clicked.connect(self.start_request)
+        self.stop_button.clicked.connect(self.stop_request)
         self.save_button.clicked.connect(self.save_results_to_file)
         self.clear_button.clicked.connect(self.clear_all_inputs)
         
@@ -999,20 +1344,41 @@ class GeminiApp(QMainWindow):
 
     @Slot()
     def toggle_engine_ui(self):
-        is_gemini = self.engine_combo.currentIndex() == 0
+        idx = self.engine_combo.currentIndex()
+        is_gemini = (idx == 0)
+        is_baidu = (idx == 1)
+        is_textin = (idx == 2)
+        is_mineru = (idx == 3)
         
-        # Smartly swap engine widgets (Invisible elements don't take up space in Qt Layouts)
+        # Smartly swap engine widgets
         self.gemini_widget.setVisible(is_gemini)
-        self.baidu_widget.setVisible(not is_gemini)
-        self.baidu_extras_widget.setVisible(not is_gemini)
+        self.baidu_widget.setVisible(is_baidu)
+        
+        self.secret_code_container.setVisible(is_textin)
+        self.proxy_container.setVisible(not is_baidu) 
+        
+        # Change Main API Key label based on engine
+        if is_textin:
+            self.api_label.setText("🔑 App ID:")
+            self.api_key_input.setPlaceholderText("Enter your Textin App ID...")
+        elif is_mineru:
+            self.api_label.setText("🔑 API Token:")
+            self.api_key_input.setPlaceholderText("Enter MinerU Token (426 chars)...")
+        else:
+            self.api_label.setText("🔑 Token / API Key:")
+            self.api_key_input.setPlaceholderText("Enter your Token or API Key...")
 
-        # Disable prompt and its toggle button when Baidu is active (DO NOT HIDE to prevent jumping)
+        # Disable prompt and its toggle button when non-Gemini is active
         self.prompt_input.setEnabled(is_gemini)
         self.toggle_prompt_btn.setEnabled(is_gemini)
         
+        # Enable / Disable Specific Checkboxes
+        self.native_pdf_checkbox.setEnabled(not is_gemini)
+        self.download_figures_checkbox.setEnabled(is_baidu or is_mineru) 
+        
         if not is_gemini:
-            self.image_batch_spin.setToolTip("PaddleOCR processes 1 image at a time natively.")
-            self.prompt_input.setPlaceholderText("Baidu uses predefined tasks above. Free-text prompt disabled.")
+            self.image_batch_spin.setToolTip("Non-Gemini engines process 1 image at a time natively.")
+            self.prompt_input.setPlaceholderText("Custom Prompts disabled for this Engine.")
         else:
             self.image_batch_spin.setToolTip("")
             self.prompt_input.setPlaceholderText("")
@@ -1027,6 +1393,7 @@ class GeminiApp(QMainWindow):
             "engine_index": self.engine_combo.currentIndex(),
             "baidu_prompt": self.baidu_prompt_combo.currentIndex(),
             "api_key": self.api_key_input.text().strip(),
+            "secret_code": self.secret_code_input.text().strip(),
             "custom_url": self.custom_url_input.text().strip(),
             "proxy": self.proxy_input.text().strip(),
             "model_index": self.model_combo.currentIndex(),
@@ -1063,6 +1430,7 @@ class GeminiApp(QMainWindow):
             if "engine_index" in data: self.engine_combo.setCurrentIndex(data["engine_index"])
             if "baidu_prompt" in data: self.baidu_prompt_combo.setCurrentIndex(data["baidu_prompt"])
             if "api_key" in data: self.api_key_input.setText(data["api_key"])
+            if "secret_code" in data: self.secret_code_input.setText(data["secret_code"])
             if "custom_url" in data: self.custom_url_input.setText(data["custom_url"])
             if "proxy" in data: self.proxy_input.setText(data["proxy"])
             if "model_index" in data: self.model_combo.setCurrentIndex(data["model_index"])
@@ -1131,6 +1499,7 @@ class GeminiApp(QMainWindow):
     @Slot()
     def clear_all_inputs(self):
         self.api_key_input.clear()
+        self.secret_code_input.clear()
         self.custom_url_input.clear()
         self.prompt_input.setText(self.DEFAULT_OCR_PROMPT)
         self.response_output.clear()
@@ -1165,9 +1534,15 @@ class GeminiApp(QMainWindow):
 
     @Slot()
     def check_inputs(self):
-        api_key_ok = bool(self.api_key_input.text().strip()); 
-        image_ok = bool(self.current_image_paths); file_ok = bool(self.current_file_paths)
-        self.send_button.setEnabled(api_key_ok and (image_ok or file_ok))
+        api_ok = bool(self.api_key_input.text().strip())
+        
+        if self.engine_combo.currentIndex() == 2:
+            api_ok = api_ok and bool(self.secret_code_input.text().strip())
+            
+        image_ok = bool(self.current_image_paths)
+        file_ok = bool(self.current_file_paths)
+        
+        self.send_button.setEnabled(api_ok and (image_ok or file_ok))
         self.view_images_button.setEnabled(image_ok)
 
     @Slot()
@@ -1257,9 +1632,11 @@ class GeminiApp(QMainWindow):
     @Slot()
     def test_connection(self):
         api_key = self.api_key_input.text().strip()
+        engine_idx = self.engine_combo.currentIndex()
+        
         if not api_key:
-            self.append_to_log("❌ Error: Enter a Token / API Key first to test the connection.")
-            self.status_bar.showMessage("❌ Missing API Key", 3000)
+            self.append_to_log("❌ Error: Enter your credentials first to test the connection.")
+            self.status_bar.showMessage("❌ Missing Credentials", 3000)
             return
 
         self.append_to_log("🔍 Testing connection...")
@@ -1268,14 +1645,14 @@ class GeminiApp(QMainWindow):
         
         proxies = {}
         user_proxy = self.proxy_input.text().strip()
-        if user_proxy:
+        if user_proxy and engine_idx != 1:  
             if not user_proxy.startswith("http"):
                 user_proxy = f"http://{user_proxy}"
             proxies = {"http": user_proxy, "https": user_proxy}
             self.append_to_log(f"... Using local proxy tunnel: {user_proxy}")
 
         try:
-            if self.engine_combo.currentIndex() == 0:  # Gemini
+            if engine_idx == 0:  # Gemini
                 test_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash?key={api_key}"
                 response = requests.get(test_url, proxies=proxies, timeout=10)
                 if response.status_code == 200:
@@ -1284,41 +1661,79 @@ class GeminiApp(QMainWindow):
                 else:
                     self.append_to_log(f"⚠️ Server reached but returned error {response.status_code}: {response.text}")
                     self.status_bar.showMessage(f"⚠️ API Error: {response.status_code}", 5000)
-            else:  # Baidu PaddleOCR
+                    
+            elif engine_idx == 1:  # Baidu PaddleOCR Async
                 test_url = self.custom_url_input.text().strip()
                 if not test_url:
-                    self.append_to_log("❌ Error: Enter a Custom API URL for Baidu PaddleOCR.")
-                    self.status_bar.showMessage("❌ Missing Custom API URL", 5000)
-                    return
+                    test_url = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
                 
-                headers = {
-                    "Authorization": f"token {api_key}",
-                    "Content-Type": "application/json"
-                }
+                headers = {"Authorization": f"bearer {api_key}"}
                 
                 dummy_np = np.ones((150, 400, 3), dtype=np.uint8) * 255
                 cv2.putText(dummy_np, "API Test Connection OK", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,0), 2)
                 dummy_img = PIL.Image.fromarray(dummy_np)
-                
                 buffer = io.BytesIO()
                 dummy_img.save(buffer, format="JPEG")
-                file_b64 = base64.b64encode(buffer.getvalue()).decode('ascii')
                 
-                payload = {
-                    "file": file_b64,
-                    "fileType": 1,
-                    "useLayoutDetection": False,
-                    "promptLabel": "ocr"
-                }
+                data = {"model": "PaddleOCR-VL-1.6", "optionalPayload": "{}"}
+                files = {"file": ("test.jpg", buffer.getvalue())}
                 
-                response = requests.post(test_url, headers=headers, json=payload, proxies=proxies, timeout=15)
+                response = requests.post(test_url, headers=headers, data=data, files=files, proxies=proxies, timeout=15)
                 
                 if response.status_code == 200:
-                    self.append_to_log(f"✅ Endpoint reached successfully! Status returned: HTTP 200")
+                    self.append_to_log(f"✅ Endpoint reached successfully! Async Job submission works.")
                     self.status_bar.showMessage("✅ API Endpoint Reached", 5000)
                 else:
                     self.append_to_log(f"⚠️ Endpoint reached but returned HTTP {response.status_code}: {response.text[:200]}")
                     self.status_bar.showMessage(f"⚠️ API returned {response.status_code}", 5000)
+                    
+            elif engine_idx == 2:  # Textin
+                secret_code = self.secret_code_input.text().strip()
+                if not secret_code:
+                    self.append_to_log("❌ Error: Enter your Secret Code for Textin.")
+                    self.status_bar.showMessage("❌ Missing Secret Code", 5000)
+                    return
+                
+                test_url = "https://api.textin.com/ai/service/v1/pdf_to_markdown"
+                headers = {
+                    "x-ti-app-id": api_key,
+                    "x-ti-secret-code": secret_code,
+                    "Content-Type": "application/octet-stream"
+                }
+                
+                dummy_np = np.ones((10, 10, 3), dtype=np.uint8) * 255
+                dummy_img = PIL.Image.fromarray(dummy_np)
+                buffer = io.BytesIO()
+                dummy_img.save(buffer, format="JPEG")
+                
+                params = {"dpi": 72} 
+                response = requests.post(test_url, params=params, headers=headers, data=buffer.getvalue(), proxies=proxies, timeout=15)
+                
+                if response.status_code == 200:
+                    self.append_to_log("✅ Connection Successful! Textin server reached.")
+                    self.status_bar.showMessage("✅ Connection Success", 5000)
+                else:
+                    self.append_to_log(f"⚠️ Server reached but returned error {response.status_code}: {response.text}")
+                    self.status_bar.showMessage(f"⚠️ API Error: {response.status_code}", 5000)
+                    
+            elif engine_idx == 3:  # MinerU
+                if not api_key:
+                    self.append_to_log("❌ Error: Enter your API Token for MinerU.")
+                    self.status_bar.showMessage("❌ Missing Token", 5000)
+                    return
+                    
+                test_url = "https://mineru.net/api/v4/file-urls/batch"
+                headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+                data = {"files": [{"name": "test.jpg", "data_id": "test_connection"}], "model_version": "vlm"}
+                
+                response = requests.post(test_url, headers=headers, json=data, proxies=proxies, timeout=10)
+                
+                if response.status_code == 200 and response.json().get("code") == 0:
+                    self.append_to_log("✅ Connection Successful! MinerU API accepted token.")
+                    self.status_bar.showMessage("✅ Connection Success", 5000)
+                else:
+                    self.append_to_log(f"⚠️ Server reached but returned error: {response.text}")
+                    self.status_bar.showMessage(f"⚠️ API Error", 5000)
                 
         except requests.exceptions.Timeout:
             self.append_to_log("❌ Connection Timeout: Server blocked/down. Check your VPN/Proxy.")
@@ -1334,16 +1749,16 @@ class GeminiApp(QMainWindow):
         engine = self.engine_combo.currentText()
         custom_url = self.custom_url_input.text().strip()
         
-        if engine == "Baidu PaddleOCR-VL (Custom URL)" and not custom_url:
-            self.handle_error("Please enter a Custom API URL for Baidu PaddleOCR.")
-            return
+        if engine == "Baidu PaddleOCR-VL" and not custom_url:
+            custom_url = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
 
         self.append_to_log(f"Starting OCR request process via {engine}...")
         self.send_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
         self.response_output.clear() 
         
         user_proxy = self.proxy_input.text().strip()
-        if user_proxy:
+        if user_proxy and self.engine_combo.currentIndex() != 1: 
             if not user_proxy.startswith("http"):
                 user_proxy = f"http://{user_proxy}"
             os.environ["http_proxy"] = user_proxy
@@ -1353,7 +1768,8 @@ class GeminiApp(QMainWindow):
             os.environ.pop("http_proxy", None)
             os.environ.pop("https_proxy", None)
         
-        api_key = self.api_key_input.text()
+        api_key = self.api_key_input.text().strip()
+        secret_code = self.secret_code_input.text().strip()
         model = self.model_combo.currentText()
         prompt = self.prompt_input.toPlainText()
         image_paths = self.current_image_paths
@@ -1379,7 +1795,6 @@ class GeminiApp(QMainWindow):
         
         if file_paths and not all_pages and start_page > end_page:
             self.handle_error("Logic Error: Start page must be less than or equal to End page.")
-            self.send_button.setEnabled(True)
             return
 
         self.thread = QThread()
@@ -1391,7 +1806,7 @@ class GeminiApp(QMainWindow):
                                     all_pages, start_page, end_page, 
                                     num_columns,
                                     engine, custom_url, baidu_prompt_val,
-                                    native_pdf_val, download_figures_val) 
+                                    native_pdf_val, download_figures_val, secret_code) 
         self.worker.moveToThread(self.thread)
         self.worker.status_update.connect(self.append_to_log)
         
@@ -1407,6 +1822,14 @@ class GeminiApp(QMainWindow):
         self.worker.error.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
         self.thread.start()
+
+    @Slot()
+    def stop_request(self):
+        if hasattr(self, 'worker') and self.worker:
+            self.append_to_log("🛑 Stop command sent. Waiting for current task to abort...")
+            self.status_bar.showMessage("Stopping...", 3000)
+            self.stop_button.setEnabled(False)
+            self.worker.cancel()
 
     @Slot(list)
     def show_issues_report(self, issues):
@@ -1433,6 +1856,7 @@ class GeminiApp(QMainWindow):
     def handle_all_completed(self):
         self.status_bar.showMessage("✅ All tasks completed.", 5000) 
         self.append_to_log("Finished processing background thread.")
+        self.stop_button.setEnabled(False)
         self.check_inputs()
 
     @Slot(str)
@@ -1440,6 +1864,7 @@ class GeminiApp(QMainWindow):
         self.response_output.append(f"❌ Error:\n\n{error_message}\n" + ("-"*40) + "\n")
         self.status_bar.showMessage(f"❌ Error: {error_message}", 10000) 
         self.append_to_log(f"ERROR: {error_message}")
+        self.stop_button.setEnabled(False)
         self.check_inputs()
 
 # --- 4. Run Application ---
