@@ -25,12 +25,14 @@ abstract: >-
   digitization.
 
 
-  Currently supports Google Gemini (2.5/ 3.1) and Baidu
-  PaddleOCR-VL (1.5).
+  Currently supports Google Gemini (2.5/ 3.5) and Baidu
+  PaddleOCR-VL (1.6).
 keywords:
   - OCR
   - PaddleOCR-VL
   - Google Gemini
+  - MinerU
+  - Textin
 license: MIT
-version: V2
-date-released: '2026-05-01'
+version: V3
+date-released: '2026-05-29'
