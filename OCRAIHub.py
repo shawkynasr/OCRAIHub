@@ -941,13 +941,14 @@ class RequestWorker(QObject):
 class GeminiApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Multi-Engine AI OCR V3 By (Shawky Nasr) shawkynasr@126.com")
+        self.setWindowTitle("Multi-Engine AI OCR V3.1 By (Shawky Nasr) shawkynasr@126.com")
         self.setGeometry(100, 100, 1200, 800)
         self.setLayoutDirection(Qt.LeftToRight) 
 
         self.VLM_MODELS_LIST =[
             "gemini-2.5-pro",
             "gemini-2.5-flash",
+            "gemini-3.5-flash-lite",
             "gemini-3.1-pro-preview",
             "gemini-3.1-flash-lite",
             "gemini-3-flash-preview",
