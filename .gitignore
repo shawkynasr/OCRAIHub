@@ -1,0 +1,22 @@
+# Virtual Environment
+ocr_env/
+venv/
+ENV/
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# PyInstaller Build Artifacts
+build/
+dist/
+*.spec
+
+# macOS System Files
+.DS_Store
+
+# Output folders
+output/
+*_images/
+*.dmg
+*.log

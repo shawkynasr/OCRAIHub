@@ -1,0 +1,9 @@
+PySide6
+pymupdf
+pandas
+opencv-python
+pillow
+requests
+google-genai
+pydantic
+pyinstaller

@@ -4,9 +4,11 @@
 ![Python](https://img.shields.io/badge/python-3.8%2B-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)
 
+[中文文档](README_CN.md)  &  [تعريف باللغة العربية](README_AR.md)
+
 **OCRAIHub** is a powerful, multi-engine Desktop GUI application designed to extract highly accurate text, markdown tables, math formulas, and charts from images and PDFs. It leverages the world's most advanced Vision-Language Models (VLMs) to provide perfect document digitization.
 
-Currently supports **Google Gemini (2.5/ 3.1)** and **Baidu PaddleOCR-VL (1.5)**.
+Currently supports **Google Gemini (2.5/ 3.5)** , **Baidu PaddleOCR-VL (1.6)**, **MinerU** and **Textin**.
 
 ---
 
@@ -23,6 +25,11 @@ Currently supports **Google Gemini (2.5/ 3.1)** and **Baidu PaddleOCR-VL (1.5)**
 
 ---
 
+## Screenshots
+<img width="3360" height="1898" alt="Gemini OCR" src="https://github.com/user-attachments/assets/a23e11f7-9404-4306-a695-c040ee04e366" />
+<img width="3360" height="1896" alt="Baidu VL 1 15" src="https://github.com/user-attachments/assets/e7efe9cb-d31a-447d-b370-c421121b92c9" />
+
+---
 ## 🚀 Installation
 
 ### 1. Install Dependencies
@@ -55,7 +62,7 @@ python OCRAIHub.py
 
 This tool would not be possible without the incredible work of the open-source and AI communities:
 *   Special thanks to [Gemini-OCR-Arabic](https://github.com/the-cataloger/Gemini-OCR-Arabic) by the-cataloger, which served as the foundational fork and inspiration for the early versions of this tool.
-*[Google Gemini](https://deepmind.google/technologies/gemini/) for their cutting-edge multimodal VLM APIs.
+*   [Google Gemini](https://deepmind.google/technologies/gemini/) for their cutting-edge multimodal VLM APIs.
 *   [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) by Baidu for their industry-leading layout detection and document parsing models.
 *   [PyMuPDF (Fitz)](https://github.com/pymupdf/PyMuPDF) for lightning-fast local PDF rasterization.
 *[PySide6](https://doc.qt.io/qtforpython-6/) for the robust GUI framework.

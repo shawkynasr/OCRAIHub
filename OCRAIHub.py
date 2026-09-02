@@ -964,7 +964,7 @@ class RequestWorker(QObject):
 class GeminiApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Multi-Engine AI OCR V3 By (Shawky Nasr) shawkynasr@126.com")
+        self.setWindowTitle("Multi-Engine AI OCR V3.1 By (Shawky Nasr) shawkynasr@126.com")
         self.setGeometry(100, 100, 1200, 800)
         self.setLayoutDirection(Qt.LeftToRight) 
 
