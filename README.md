@@ -8,7 +8,7 @@
 
 **OCRAIHub** is a powerful, multi-engine Desktop GUI application designed to extract highly accurate text, markdown tables, math formulas, and charts from images and PDFs. It leverages the world's most advanced Vision-Language Models (VLMs) to provide perfect document digitization.
 
-Currently supports **Google Gemini (2.5/ 3.5)** , **Baidu PaddleOCR-VL (1.6)**, **MinerU** and **Textin**.
+Currently supports **Google Gemini (2.5/ 3.7)** , **Baidu PaddleOCR-VL (1.6)**, **TextIn (v1 xparse)**, and **MinerU (vlm)**.
 
 ---
 
@@ -56,6 +56,14 @@ python OCRAIHub.py
 2. Copy your **Token** and your **Custom API URL** (e.g., `https://aistudio.baidu.com/serving/online/xxxx?xxxx`).
 3. Select your Baidu Task (OCR, Table, Formula, or Chart).
 
+### TextIn
+1. Obtain your `App ID` and `Secret Code` from [TextIn](https://www.textin.com/).
+2. Paste both credentials into the app.
+
+### MinerU
+1. Get your API Token from [MinerU](https://mineru.net/).
+2. Paste your token into the app.
+
 ---
 
 ## 🙏 Acknowledgments
@@ -64,8 +72,10 @@ This tool would not be possible without the incredible work of the open-source a
 *   Special thanks to [Gemini-OCR-Arabic](https://github.com/the-cataloger/Gemini-OCR-Arabic) by the-cataloger, which served as the foundational fork and inspiration for the early versions of this tool.
 *   [Google Gemini](https://deepmind.google/technologies/gemini/) for their cutting-edge multimodal VLM APIs.
 *   [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) by Baidu for their industry-leading layout detection and document parsing models.
+*   [TextIn](https://www.textin.com/) for their high-precision document parsing engine.
+*   [MinerU](https://github.com/opendatalab/MinerU) by OpenDataLab for their state-of-the-art PDF extraction.
 *   [PyMuPDF (Fitz)](https://github.com/pymupdf/PyMuPDF) for lightning-fast local PDF rasterization.
-*[PySide6](https://doc.qt.io/qtforpython-6/) for the robust GUI framework.
+*	[PySide6](https://doc.qt.io/qtforpython-6/) for the robust GUI framework.
 
 ---
 

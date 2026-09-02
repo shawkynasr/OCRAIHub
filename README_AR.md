@@ -8,7 +8,7 @@
 
 **OCRAIHub** هو تطبيق سطح مكتب قوي بواجهة رسومية (GUI) يدعم محركات ذكاء اصطناعي متعددة، مُصمم لاستخراج النصوص، جداول Markdown، المعادلات الرياضية، والرسوم البيانية من الصور وملفات PDF بدقة فائقة. يعتمد البرنامج على أحدث نماذج الرؤية واللغة (VLMs) في العالم لتوفير رقمنة مثالية للمستندات.
 
-يدعم التطبيق حالياً **Google Gemini (2.5/3.1)** و **Baidu PaddleOCR-VL (1.5)**.
+يدعم التطبيق حالياً **Google Gemini (2.5/3.7)** و **Baidu PaddleOCR-VL (1.6)**.
 
 ---
 
@@ -55,6 +55,13 @@ python OCRAIHub.py
 1. انتقل إلى [Baidu AI Studio](https://aistudio.baidu.com/) وقم بنشر نموذج `PaddleOCR-VL`.
 2. انسخ الـ **Token** الخاص بك ورابط **Custom API URL** (مثال: `https://aistudio.baidu.com/serving/online/xxxx?xxxx`).
 3. اختر مهمة بايدو (Baidu Task) المطلوبة للاستخراج: (OCR, Table, Formula, أو Chart).
+### إعداد TextIn
+1. احصل على معرف التطبيق (`App ID`) والرمز السري (`Secret Code`) من موقع [TextIn](https://www.textin.com/).
+2. الصق كلا المفتاحين داخل الخانات المخصصة في التطبيق.
+
+### إعداد MinerU
+1. احصل على رمز واجهة برمجة التطبيقات (`API Token`) من موقع [MinerU](https://mineru.net/).
+2. الصق الرمز داخل خانة المفتاح في التطبيق.
 
 ---
 
@@ -64,6 +71,8 @@ python OCRAIHub.py
 *   شكر خاص لمشروع[Gemini-OCR-Arabic](https://github.com/the-cataloger/Gemini-OCR-Arabic) بواسطة the-cataloger، والذي كان بمثابة التفرع (fork) الأساسي والمصدر المُلهم للنسخ الأولى من هذه الأداة.
 *   [Google Gemini](https://deepmind.google/technologies/gemini/) لتقديمهم واجهات برمجة تطبيقات VLMs المتقدمة.
 *   [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) من Baidu لتقديمهم نماذج رائدة في تحليل التخطيط (Layout detection) وفهم المستندات.
+*   [TextIn](https://www.textin.com/) لتقديمهم محركاً فائق الدقة في تحليل الأشجار البنائية والجداول للمستندات.
+*   [MinerU](https://github.com/opendatalab/MinerU) من OpenDataLab لتقديمهم أحدث تقنيات استخراج ومعالجة ملفات PDF المعقدة.
 *   [PyMuPDF (Fitz)](https://github.com/pymupdf/PyMuPDF) لسرعتهم الفائقة في معالجة ملفات PDF محلياً.
 *   [PySide6](https://doc.qt.io/qtforpython-6/) لإطار عمل واجهة المستخدم الرسومية (GUI) القوي.
 

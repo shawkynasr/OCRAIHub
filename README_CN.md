@@ -6,7 +6,7 @@
 
 **OCRAIHub** 是一款功能强大的多引擎桌面端 GUI 应用程序。它利用世界上最先进的视觉语言模型 (VLM)，能够从图像和 PDF 中高精度地提取文本、Markdown 表格、数学公式和图表，实现完美的文档数字化。
 
-目前支持 **Google Gemini (2.5/3.1)** 和 **百度 PaddleOCR-VL (1.5)**。
+目前支持 **Google Gemini (2.5/3.7)** 和 **百度 PaddleOCR-VL (1.6)**、**合合信息 TextIn (v1 xparse)** 和 **MinerU (vlm)**。
 
 ---
 
@@ -53,6 +53,13 @@ python OCRAIHub.py
 1. 前往 [Baidu AI Studio](https://aistudio.baidu.com/) 并部署 `PaddleOCR-VL` 线上服务。
 2. 复制您的 **Token** 和 **自定义 API URL**（例如：`https://aistudio.baidu.com/serving/online/xxxx?xxxx`）。
 3. 选择所需的百度任务模式（OCR, Table, Formula, 或 Chart）。
+
+### TextIn
+1. 在 [TextIn 官网](https://www.textin.com/) 获取 `App ID` 与 `Secret Code` 并填入软件。
+
+### MinerU
+1. 在 [MinerU 官网](https://mineru.net/) 获取 API Token 并填入软件。
+
 ---    
 ## 🙏 致谢
 
@@ -60,8 +67,11 @@ python OCRAIHub.py
 *   特别感谢 the-cataloger 开源的 [Gemini-OCR-Arabic](https://github.com/the-cataloger/Gemini-OCR-Arabic) 项目。该项目是本工具早期版本的基础分支与灵感来源。
 *[Google Gemini](https://deepmind.google/technologies/gemini/) 提供了前沿的多模态 VLM API。
 *   [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR) 百度开源的业界领先的版面分析与文档解析模型。
+*   [TextIn](https://www.textin.com/)
+*   [MinerU](https://github.com/opendatalab/MinerU)
 *   [PyMuPDF (Fitz)](https://github.com/pymupdf/PyMuPDF) 提供了极速的本地 PDF 渲染功能。
 *[PySide6](https://doc.qt.io/qtforpython-6/) 提供了稳定强大的 GUI 框架。
+
 ---  
 ## 📝 引用 (Citation)
 
