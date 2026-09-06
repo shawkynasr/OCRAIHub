@@ -620,18 +620,29 @@ class RequestWorker(QObject):
         return "\n\n".join(full_text)
 
     def send_textin_request(self, file_data, file_name="document.pdf"):
-        """Sends document to the new TextIn v1 xparse API"""
+        """Sends document to TextIn v1 xparse with enhanced table merging & markdown settings"""
         url = "https://api.textin.com/api/v1/xparse/parse/sync"
         headers = {
             "x-ti-app-id": self.api_key,
             "x-ti-secret-code": self.secret_code,
         }
         
-        # New v1 configuration structure
+        # Enhanced xparse v1 Configuration
         config = {
             "capabilities": {
                 "include_table_structure": True,
-                "title_tree": True
+                "title_tree": True,
+                "element_merge_mode": "merged",    # 🌟 Merge cross-page tables into one
+                "table_view": "markdown",          # 🌟 Force pure Markdown |---| tables instead of HTML
+                "remove_watermark": False,         # Set to True if documents have watermarks
+                "crop_dewarp": False               # Set to True for curved/photographed book pages
+            },
+            "config": {
+                "force_engine": "textin",
+                "engine_params": {
+                    "parse_mode": "auto",          # auto, vlm, scan, parse
+                    "formula_level": 1             # Enhanced LaTeX formula recognition
+                }
             }
         }
         
