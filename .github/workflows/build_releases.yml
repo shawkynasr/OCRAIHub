@@ -2,10 +2,24 @@ name: Build Releases (Windows & Linux)
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (e.g. v3.1.0)'
+        required: true
+        default: 'v3.1.0'
   push:
-    branches: [ "main" ]
+    tags:
+      - 'v*'
+    branches:
+      - 'main'
+
+permissions:
+  contents: write
 
 jobs:
+  # ==========================================
+  # JOB 1: WINDOWS BUILD (.exe)
+  # ==========================================
   build-windows:
     runs-on: windows-latest
 
@@ -21,7 +35,7 @@ jobs:
     - name: Install Python Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install PySide6 pymupdf pandas opencv-python pillow requests google-genai pydantic pyinstaller
+        pip install -r requirements.txt
 
     - name: Build with PyInstaller
       run: |
@@ -33,6 +47,9 @@ jobs:
         name: OCRAIHub-Windows
         path: dist/OCRAIHub.exe
 
+  # ==========================================
+  # JOB 2: LINUX BUILD
+  # ==========================================
   build-linux:
     runs-on: ubuntu-latest
 
@@ -53,14 +70,48 @@ jobs:
     - name: Install Python Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install PySide6 pymupdf pandas opencv-python pillow requests google-genai pydantic pyinstaller
+        pip install -r requirements.txt
 
     - name: Build with PyInstaller
       run: |
-        pyinstaller --name "OCRAIHub" --onefile --windowed --clean --hidden-import pydantic --hidden-import google.genai --collect-all google.genai --copy-metadata google-genai OCRAIHub.py
+        pyinstaller --name "OCRAIHub-Linux" --onefile --windowed --clean --hidden-import pydantic --hidden-import google.genai --collect-all google.genai --copy-metadata google-genai OCRAIHub.py
 
     - name: Upload Linux Artifact
       uses: actions/upload-artifact@v4
       with:
         name: OCRAIHub-Linux
-        path: dist/OCRAIHub
+        path: dist/OCRAIHub-Linux
+
+  # ==========================================
+  # JOB 3: CREATE DRAFT RELEASE & ATTACH BUILDS
+  # ==========================================
+  create-release:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Download Windows Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: OCRAIHub-Windows
+        path: release-assets
+
+    - name: Download Linux Artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: OCRAIHub-Linux
+        path: release-assets
+
+    - name: Create GitHub Draft Release
+      uses: softprops/action-gh-release@v2
+      with:
+        draft: true
+        prerelease: false
+        name: "OCRAIHub Release ${{ github.event.inputs.tag_name || github.ref_name }}"
+        tag_name: "${{ github.event.inputs.tag_name || (github.ref_type == 'tag' && github.ref_name) || 'v3.1.0' }}"
+        files: |
+          release-assets/OCRAIHub.exe
+          release-assets/OCRAIHub-Linux
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
