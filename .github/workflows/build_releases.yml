@@ -1,4 +1,4 @@
-name: Build Releases (Windows & Linux)
+name: Build Releases (Windows, Linux & macOS)
 
 on:
   workflow_dispatch:
@@ -22,96 +22,179 @@ jobs:
   # ==========================================
   build-windows:
     runs-on: windows-latest
-
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    - name: Install Python Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: Build with PyInstaller
-      run: |
-        pyinstaller --name "OCRAIHub" --onefile --windowed --noconsole --clean --hidden-import pydantic --hidden-import google.genai --collect-all google.genai --copy-metadata google-genai OCRAIHub.py
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --name "OCRAIHub" --onefile --windowed --noconsole --clean --hidden-import pydantic --hidden-import google.genai --collect-all google.genai --copy-metadata google-genai OCRAIHub.py
 
-    - name: Upload Windows Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: OCRAIHub-Windows
-        path: dist/OCRAIHub.exe
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OCRAIHub-Windows
+          path: dist/OCRAIHub.exe
 
   # ==========================================
   # JOB 2: LINUX BUILD
   # ==========================================
   build-linux:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    - name: Install System Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0 libgl1
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libxkbcommon-x11-0 libxcb-cursor0 libgl1
 
-    - name: Install Python Dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: Build with PyInstaller
-      run: |
-        pyinstaller --name "OCRAIHub-Linux" --onefile --windowed --clean --hidden-import pydantic --hidden-import google.genai --collect-all google.genai --copy-metadata google-genai OCRAIHub.py
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller --name "OCRAIHub-Linux" --onefile --windowed --clean --hidden-import pydantic --hidden-import google.genai --collect-all google.genai --copy-metadata google-genai OCRAIHub.py
 
-    - name: Upload Linux Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: OCRAIHub-Linux
-        path: dist/OCRAIHub-Linux
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OCRAIHub-Linux
+          path: dist/OCRAIHub-Linux
 
   # ==========================================
-  # JOB 3: CREATE DRAFT RELEASE & ATTACH BUILDS
+  # JOB 3: macOS BUILDS (Apple Silicon + Intel)
+  # ==========================================
+  # Each architecture is built natively on its own runner, because the Python
+  # wheels (PySide6, OpenCV, PyMuPDF) are architecture-specific.
+  #   - macos-15        -> arm64  (Apple Silicon)
+  #   - macos-15-intel  -> x86_64 (Intel). macos-13 was retired in Dec 2025, and
+  #                        GitHub will drop Intel macOS runners in Fall 2027.
+  build-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: ARM
+            runner: macos-15
+            expected_arch: arm64
+          - arch: Intel
+            runner: macos-15-intel
+            expected_arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # onedir + windowed gives a proper OCRAIHub.app bundle. (onefile + windowed
+      # on macOS is deprecated in PyInstaller and starts slowly, since it
+      # unpacks to a temp folder on every launch.)
+      - name: Build .app with PyInstaller
+        run: |
+          pyinstaller --name "OCRAIHub" --windowed --clean --noconfirm \
+            --osx-bundle-identifier com.shawkynasr.ocraihub \
+            --hidden-import pydantic --hidden-import google.genai \
+            --collect-all google.genai --copy-metadata google-genai \
+            OCRAIHub.py
+
+      - name: Verify architecture matches the runner
+        run: |
+          ARCHS=$(lipo -archs dist/OCRAIHub.app/Contents/MacOS/OCRAIHub)
+          echo "Built architecture: $ARCHS (expected: ${{ matrix.expected_arch }})"
+          if [ "$ARCHS" != "${{ matrix.expected_arch }}" ]; then
+            echo "::error::Architecture mismatch - runner label may have changed"
+            exit 1
+          fi
+
+      # Ad-hoc signature (no Apple Developer account needed). Apple Silicon
+      # refuses to run completely unsigned binaries.
+      - name: Ad-hoc code sign
+        run: |
+          codesign --force --deep --sign - dist/OCRAIHub.app
+          codesign --verify --deep --strict dist/OCRAIHub.app
+
+      # ditto keeps symlinks and macOS metadata intact; plain `zip` can corrupt the bundle.
+      - name: Package as zip
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent dist/OCRAIHub.app "dist/OCRAIHub-macOS-${{ matrix.arch }}.zip"
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OCRAIHub-macOS-${{ matrix.arch }}
+          path: dist/OCRAIHub-macOS-${{ matrix.arch }}.zip
+
+  # ==========================================
+  # JOB 4: CREATE DRAFT RELEASE & ATTACH BUILDS
   # ==========================================
   create-release:
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, build-macos]
     runs-on: ubuntu-latest
-
     steps:
-    - name: Download Windows Artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: OCRAIHub-Windows
-        path: release-assets
+      - name: Download Windows Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: OCRAIHub-Windows
+          path: release-assets
 
-    - name: Download Linux Artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: OCRAIHub-Linux
-        path: release-assets
+      - name: Download Linux Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: OCRAIHub-Linux
+          path: release-assets
 
-    - name: Create GitHub Draft Release
-      uses: softprops/action-gh-release@v2
-      with:
-        draft: true
-        prerelease: false
-        name: "OCRAIHub Release ${{ github.event.inputs.tag_name || github.ref_name }}"
-        tag_name: "${{ github.event.inputs.tag_name || (github.ref_type == 'tag' && github.ref_name) || 'v3.1.0' }}"
-        files: |
-          release-assets/OCRAIHub.exe
-          release-assets/OCRAIHub-Linux
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download macOS ARM Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: OCRAIHub-macOS-ARM
+          path: release-assets
+
+      - name: Download macOS Intel Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: OCRAIHub-macOS-Intel
+          path: release-assets
+
+      - name: Create GitHub Draft Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: false
+          name: "OCRAIHub Release ${{ github.event.inputs.tag_name || github.ref_name }}"
+          tag_name: "${{ github.event.inputs.tag_name || (github.ref_type == 'tag' && github.ref_name) || 'v3.1.0' }}"
+          files: |
+            release-assets/OCRAIHub.exe
+            release-assets/OCRAIHub-Linux
+            release-assets/OCRAIHub-macOS-ARM.zip
+            release-assets/OCRAIHub-macOS-Intel.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
