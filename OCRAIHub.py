@@ -29,6 +29,12 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QPixmap
 
+# --- RTL / Word export helpers (rtl_export.py, same folder) ---
+from rtl_export import (
+    export_docx, markdown_to_html, prepare_markdown, strip_ui_decorations
+)
+from PySide6.QtCore import QMimeData
+
 # --- (1. Image Preview Dialog) ---
 class ImagePreviewDialog(QDialog):
     def __init__(self, image_paths, parent=None):
@@ -100,7 +106,8 @@ class RequestWorker(QObject):
                  process_images_resize_factor=1.0, 
                  all_pages=True, start_page=1, end_page=1,
                  num_columns=1, engine="Google Gemini", custom_url="", baidu_prompt="ocr",
-                 native_pdf=False, download_figures=False, secret_code=""): 
+                 native_pdf=False, download_figures=False, secret_code="",
+                 autosave_docx=False): 
         super().__init__()
         self.api_key = api_key
         self.secret_code = secret_code
@@ -125,6 +132,7 @@ class RequestWorker(QObject):
         self.baidu_prompt = baidu_prompt
         self.NATIVE_PDF = native_pdf
         self.DOWNLOAD_FIGURES = download_figures
+        self.AUTOSAVE_DOCX = autosave_docx
         
         # STOP FLAG
         self._is_cancelled = False
@@ -329,6 +337,17 @@ class RequestWorker(QObject):
                         f.write(img_data)
                 except Exception as e:
                     self.status_update.emit(f"⚠️ Failed to download {img_name}: {e}")
+
+    def autosave_docx(self, md_text, save_base_name):
+        """Optional: also write a direction-aware Word file next to the auto-saved .md."""
+        if not self.AUTOSAVE_DOCX:
+            return
+        out_docx_path = f"{save_base_name}.docx"
+        try:
+            export_docx(md_text, out_docx_path, tidy_punctuation=True)
+            self.status_update.emit(f"✅ 📝 Auto-saved Word to: {out_docx_path}")
+        except Exception as e:
+            self.status_update.emit(f"❌ Failed to auto-save Word: {str(e)}")
 
     def parse_paddle_response(self, data, save_base_name=None):
         self.check_cancelled()
@@ -803,6 +822,7 @@ class RequestWorker(QObject):
                             with open(out_md_path, "w", encoding="utf-8") as f:
                                 f.write(images_full_text)
                             self.status_update.emit(f"✅ 💾 Auto-saved Markdown to: {out_md_path}")
+                            self.autosave_docx(images_full_text, save_base_name)
                         except Exception as e:
                             self.status_update.emit(f"❌ Failed to auto-save Images: {str(e)}")
                             issues_found.append(f"Images: Auto-save Failed ({str(e)})")
@@ -956,6 +976,7 @@ class RequestWorker(QObject):
                         with open(out_md_path, "w", encoding="utf-8") as f:
                             f.write(pdf_full_text)
                         self.status_update.emit(f"✅ 💾 Auto-saved Markdown to: {out_md_path}")
+                        self.autosave_docx(pdf_full_text, save_base_name)
                     except Exception as e:
                         self.status_update.emit(f"❌ Failed to auto-save {pdf_name}: {str(e)}")
                         issues_found.append(f"{pdf_name}: Auto-save Failed ({str(e)})")
@@ -1132,6 +1153,15 @@ class GeminiApp(QMainWindow):
         bx_lay.addWidget(self.native_pdf_checkbox)
         bx_lay.addWidget(self.download_figures_checkbox)
         left_column_layout.addWidget(self.pdf_extras_widget)
+
+        # Auto-save Word (.docx): applies to BOTH standalone images and PDFs, so it
+        # gets its own row rather than sitting inside the PDF-only extras above.
+        self.autosave_docx_checkbox = QCheckBox("📝 Auto-save Word (.docx) [RTL]")
+        self.autosave_docx_checkbox.setToolTip(
+            "Exports a .docx file with correct Right-to-Left direction for Arabic text.\n"
+            "Applies to both images and PDFs."
+        )
+        left_column_layout.addWidget(self.autosave_docx_checkbox)
 
         # ==========================================
         # ADVANCED SETTINGS TOGGLE AREA
@@ -1318,6 +1348,10 @@ class GeminiApp(QMainWindow):
         self.save_button = QPushButton("💾 Manual Save Result...")
         self.save_button.setEnabled(False)
         tools_layout.addWidget(self.save_button)
+        self.copy_word_button = QPushButton("📋 Copy for Word")
+        self.copy_word_button.setEnabled(False)
+        self.copy_word_button.setToolTip("Copies rich text that keeps Arabic/RTL direction when pasted into Word")
+        tools_layout.addWidget(self.copy_word_button)
         self.clear_button = QPushButton("🧹 Clear All")
         tools_layout.addWidget(self.clear_button)
         right_column_layout.addLayout(tools_layout)
@@ -1350,6 +1384,7 @@ class GeminiApp(QMainWindow):
         self.send_button.clicked.connect(self.start_request)
         self.stop_button.clicked.connect(self.stop_request)
         self.save_button.clicked.connect(self.save_results_to_file)
+        self.copy_word_button.clicked.connect(self.copy_for_word)
         self.clear_button.clicked.connect(self.clear_all_inputs)
         
         self.import_settings_button.clicked.connect(self.import_settings_from_file)
@@ -1444,7 +1479,8 @@ class GeminiApp(QMainWindow):
             "start_page": self.start_page_spin.value(),
             "end_page": self.end_page_spin.value(),
             "native_pdf": self.native_pdf_checkbox.isChecked(),
-            "download_figures": self.download_figures_checkbox.isChecked()
+            "download_figures": self.download_figures_checkbox.isChecked(),
+            "autosave_docx": self.autosave_docx_checkbox.isChecked()
         }
         try:
             with open(file_path, "w", encoding="utf-8") as f:
@@ -1484,6 +1520,7 @@ class GeminiApp(QMainWindow):
             if "end_page" in data: self.end_page_spin.setValue(data["end_page"])
             if "native_pdf" in data: self.native_pdf_checkbox.setChecked(data["native_pdf"])
             if "download_figures" in data: self.download_figures_checkbox.setChecked(data["download_figures"])
+            if "autosave_docx" in data: self.autosave_docx_checkbox.setChecked(data["autosave_docx"])
             
             self.append_to_log(f"✅ Settings successfully imported from: {file_path}")
             self.status_bar.showMessage("✅ Settings Imported", 5000)
@@ -1506,13 +1543,39 @@ class GeminiApp(QMainWindow):
     def save_results_to_file(self):
         text_to_save = self.response_output.toPlainText()
         if not text_to_save: return
-        file_path, selected_filter = QFileDialog.getSaveFileName(self, "Save Result As...", "", "CSV (*.csv);;Text Files (*.txt);;Markdown (*.md);;All (*)")
+        filters = (
+            "Word Document - Arabic/RTL aware (*.docx);;"
+            "Markdown - RTL aware (*.md);;"
+            "Markdown - plain (*.md);;"
+            "CSV (*.csv);;Text Files (*.txt);;All (*)"
+        )
+        file_path, selected_filter = QFileDialog.getSaveFileName(self, "Save Result As...", "", filters)
         if not file_path: return
         try:
-            if file_path.endswith('.csv'): self.save_as_csv(text_to_save, file_path)
+            lower = file_path.lower()
+            if lower.endswith('.csv'): self.save_as_csv(text_to_save, file_path)
+            elif lower.endswith('.docx') or selected_filter.startswith("Word"):
+                if not lower.endswith('.docx'): file_path += '.docx'
+                self.save_as_docx(text_to_save, file_path)
+            elif selected_filter.startswith("Markdown - RTL"):
+                self.save_as_text(prepare_markdown(strip_ui_decorations(text_to_save), mode="html"), file_path)
             else: self.save_as_text(text_to_save, file_path)
             self.append_to_log(f"Result saved to: {file_path}")
         except Exception as e: self.append_to_log(f"ERROR: Save failed - {e}")
+
+    def save_as_docx(self, text, path):
+        export_docx(strip_ui_decorations(text), path, tidy_punctuation=True)
+        self.status_bar.showMessage(f"✅ Saved as Word in: {path}", 5000)
+
+    @Slot()
+    def copy_for_word(self):
+        text = strip_ui_decorations(self.response_output.toPlainText())
+        if not text.strip(): return
+        mime = QMimeData()
+        mime.setHtml(markdown_to_html(text, full_page=True))
+        mime.setText(text)  # plain-text fallback for editors that ignore HTML
+        QApplication.clipboard().setMimeData(mime)
+        self.status_bar.showMessage("📋 Copied. Paste into Word to keep Arabic/RTL direction.", 5000)
 
     def save_as_text(self, text, path):
         with open(path, 'w', encoding='utf-8') as f: f.write(text)
@@ -1556,6 +1619,7 @@ class GeminiApp(QMainWindow):
         self.proxy_input.clear() 
         self.native_pdf_checkbox.setChecked(False)
         self.download_figures_checkbox.setChecked(False)
+        self.autosave_docx_checkbox.setChecked(False)
         
         self.all_pages_checkbox.setChecked(True)
         self.start_page_spin.setValue(1)
@@ -1583,6 +1647,7 @@ class GeminiApp(QMainWindow):
     @Slot()
     def check_save_button_status(self):
         response_ok = bool(self.response_output.toPlainText().strip()); self.save_button.setEnabled(response_ok)
+        self.copy_word_button.setEnabled(response_ok)
 
     @Slot()
     def open_image_dialog(self):
@@ -1833,6 +1898,7 @@ class GeminiApp(QMainWindow):
         
         native_pdf_val = self.native_pdf_checkbox.isChecked()
         download_figures_val = self.download_figures_checkbox.isChecked()
+        autosave_docx_val = self.autosave_docx_checkbox.isChecked()
         
         num_columns = self.columns_spin.value()
         
@@ -1853,7 +1919,8 @@ class GeminiApp(QMainWindow):
                                     all_pages, start_page, end_page, 
                                     num_columns,
                                     engine, custom_url, baidu_prompt_val,
-                                    native_pdf_val, download_figures_val, secret_code) 
+                                    native_pdf_val, download_figures_val, secret_code,
+                                    autosave_docx_val) 
         self.worker.moveToThread(self.thread)
         self.worker.status_update.connect(self.append_to_log)
         
